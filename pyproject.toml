@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssEinterpolator"
+version = "0.1.0"
+description = "Interpolate numerical Slow Slip simulations"
+authors = [{name = "Yohai Magen", email = "ymagen@ucsd.edu"}]
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/username/ssEinterpolator"
