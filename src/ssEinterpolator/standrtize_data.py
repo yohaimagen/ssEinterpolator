@@ -3,40 +3,16 @@ from scipy.interpolate import interp1d
 import argparse
 import os
 from pathlib import Path
+from utils import find_slip_events
 
-def read_data(data_dir, w):
+def read_data(data_dir, prefix):
     """Read data files for a given w value from the specified directory."""
     data = {}
     for key in ['sr', 'ts', 'state', 'slip', 'n', 't']:
-        file_path = os.path.join(data_dir, f'w{w}_{key}.npy')
+        file_path = os.path.join(data_dir, f'{prefix}{key}.npy')
         data[key] = np.load(file_path)
     return data
 
-def find_slip_events(t, threshold=3e-2, sse_threshold=60*60):
-    """Find significant slip events in the data."""
-    # Find events where slip rate exceeds threshold
-    dt = np.diff(t)
-    sses_steps = t[1:][dt < threshold]
-
-    sses = np.diff(sses_steps) < sse_threshold
-    diff = np.diff(sses.astype(int))
-
-    starts = np.where(diff == 1)[0] + 1  # +1 to shift to the start of the sequence
-    ends = np.where(diff == -1)[0] + 1
-    if sses[0]:
-        starts = np.insert(starts, 0, 0)
-
-    # If sses ends with True, add n as the last end
-    if sses[-1]:
-        ends = np.append(ends, len(sses))
-
-    A = np.column_stack((starts, ends))
-    sses = []
-    for i in range(A.shape[0]):
-        # sses.append(t[A[i, 0] + np.argmax(np.abs(d[idx, A[i, 0]:A[i, 1]]))])
-        sses.append(np.mean(sses_steps[A[i, 0]: A[i, 1]]))
-    
-    return np.array(sses)
 
 def find_new_sses(sses1, sses2, interval=1e6):
     """
@@ -109,10 +85,12 @@ def main():
     parser = argparse.ArgumentParser(description='Interpolate slip rate data with refined time points around events.')
     parser.add_argument('input_dir', type=str, help='Directory containing input .npy files')
     parser.add_argument('output_dir', type=str, help='Directory to save interpolated data')
-    parser.add_argument('w', type=str, help='width of W')
+    parser.add_argument('prefix', type=str, help='prefix of the data files')
+    parser.add_argument('sr_idx', type=int, help='slip rate index to detect on slip events')
     parser.add_argument('time_range', type=float, nargs=2, help='Time range to process (start end)')
 
     parser.add_argument('--threshold', type=float, default=3e-2, help='Threshold for slip event detection')
+    parser.add_argument('--T_threshold', type=float, default=60*60, help='Threshold for minimum time difference between slip events')
     
     parser.add_argument('--base_dt', type=float, default=30000, help='Base time step for interpolation')
     
@@ -120,9 +98,8 @@ def main():
     
     # Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
-    print(args.w)
     # Read input data
-    data = read_data(args.input_dir, args.w)
+    data = read_data(args.input_dir, args.prefix)
     # Apply time range mask if specified
     t_start, t_end = args.time_range
     mask = (data['t'] > t_start) & (data['t'] < t_end)
@@ -131,14 +108,14 @@ def main():
    
     
     # Find slip events
-    SSEs = [[find_slip_events(t, args.threshold), 5]]
-    for k in range(1, 6):
-        sses_t = find_new_sses(np.concatenate([sses[0] for sses in SSEs]), find_slip_events(t, args.threshold * 10**k, sse_threshold=1e5), interval=5e6)
-        if len(sses_t) > 0:
-            SSEs.append([sses_t, 5 - k])
+    Slip_events = [[find_slip_events(t, np.log10(np.abs(sr_masked[args.sr_idx])), args.threshold), args.T_threshold]]
+    # for k in range(1, 6):
+    #     sses_t = find_new_sses(np.concatenate([sses[0] for sses in Slip_events]), find_slip_events(t, args.threshold * 10**k, sse_threshold=1e5), interval=5e6)
+    #     if len(sses_t) > 0:
+    #         Slip_events.append([sses_t, 5 - k])
     
     # Create interpolation time points
-    t_interpolate = create_interpolation_time(t[0], t[-1], SSEs, base_step=args.base_dt)
+    t_interpolate = create_interpolation_time(t[0], t[-1], Slip_events, base_step=args.base_dt)
     
     t_interpolate = t_interpolate[(t_interpolate <= t[-1]) & (t_interpolate >= t[0])]
     
@@ -154,14 +131,14 @@ def main():
     
     # Save interpolated data
     for key, value in interpolated_data.items():
-        output_path = os.path.join(args.output_dir, f'w{args.w}_{key}_interpolated.npy')
+        output_path = os.path.join(args.output_dir, f'{args.prefix}{key}.npy')
         np.save(output_path, value)
     
     # Save interpolated time points
-    np.save(os.path.join(args.output_dir, f'w{args.w}_t_interpolated.npy'), t_interpolate)
+    np.save(os.path.join(args.output_dir, f'{args.prefix}t.npy'), t_interpolate)
 
     # Save sses
-    np.save(os.path.join(args.output_dir, f'w{args.w}_sses.npy'), np.concatenate([sses[0] for sses in SSEs]))
+    np.save(os.path.join(args.output_dir, f'{args.prefix}_sses.npy'), np.concatenate([sses[0] for sses in Slip_events]))
 
 if __name__ == '__main__':
     main()
