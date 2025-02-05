@@ -9,3 +9,4 @@ from .io import load_simulation_data
 from .visualization import *
 from .rom import ROM
 from .utils import *
+from .data import Data
