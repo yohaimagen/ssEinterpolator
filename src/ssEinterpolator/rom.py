@@ -35,7 +35,6 @@ class ROM:
         self.sses_num = sses_num
         for w in self.D:
             data = self.D[w]
-            print(data.sr.shape)
             idx = np.argmin(np.abs(self.lf - along_dp_sses_depth_detector))
             sses = find_slip_events(data.t, np.log10(np.abs(data.sr[idx])), threshold=sses_detector_threshold)
             if sses.shape[0] < sses_starts + sses_num:

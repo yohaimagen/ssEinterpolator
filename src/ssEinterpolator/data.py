@@ -15,7 +15,6 @@ class Data:
             def load_data(file):
                 # print(f'loading {file}')
                 data = np.load(file)
-                print(f'loaded {file} of shape {data.shape}')
                 return np.load(file)
             self.sr = load_data(f'{dir}/{prefix}sr{supix}.npy')
             self.state = load_data(f'{dir}/{prefix}state{supix}.npy')
