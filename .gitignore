@@ -1,2 +1,10 @@
 # Ignore the debug folder
 debug/
+# add ignore to all python comiple files
+*.pyc
+# add ignore to all python cache files
+__pycache__/
+# add ignore to all python env files
+env/
+# add ignore to all python log files
+*.log
