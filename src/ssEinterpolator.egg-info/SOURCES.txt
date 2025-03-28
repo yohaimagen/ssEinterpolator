@@ -1,8 +1,12 @@
 README.md
 pyproject.toml
 src/ssEinterpolator/__init__.py
+src/ssEinterpolator/data.py
 src/ssEinterpolator/interpolation.py
 src/ssEinterpolator/io.py
+src/ssEinterpolator/rom.py
+src/ssEinterpolator/standrtize_data.py
+src/ssEinterpolator/utils.py
 src/ssEinterpolator/visualization.py
 src/ssEinterpolator.egg-info/PKG-INFO
 src/ssEinterpolator.egg-info/SOURCES.txt
