@@ -14,7 +14,7 @@ class Data:
         else:
             self.sr, self.slip, self.state, self.t = load_f(str_params)
             self.t /= (365*24*60*60)
-            self.t -= self.t[0]
+            # self.t -= self.t[0]
         self.params = params
     
     def mask_data(self, tl, tr):
