@@ -83,6 +83,34 @@ def interpolate_to_latent(sr, state, slip, t, num_of_knots=1000, num_of_t_knots=
 #     latent.append([t[0], t[-1]])
 #     return np.concatenate(latent)
 
+def remove_nan_inf(arr):
+    """
+    Remove NaN and Inf values from the array.
+
+    Parameters
+    ----------
+    arr : array_like
+        Input array.
+
+    Returns
+    -------
+    array_like
+        Array with NaN and Inf values removed.
+    """
+        # Step 1: Replace infs with nan
+    arr_clean = arr.copy()
+    arr_clean[np.isinf(arr_clean)] = np.nan
+    invalid = np.isnan(arr_clean)
+    if np.sum(invalid) == 0:
+        return arr_clean
+    # Step 2: Identify valid and invalid indices
+    x = np.arange(len(arr_clean))
+    valid = ~np.isnan(arr_clean)
+    
+
+    # Step 3: Interpolate
+    arr_clean[invalid] = np.interp(x[invalid], x[valid], arr_clean[valid])
+    return arr_clean
 
 def insert_dense_u(u, thrsh):
     u_new = [u[0]]
@@ -237,13 +265,7 @@ def interpolate_time_parametric_space(t, u, num_knots, degree=3, knots_placment=
     assert degree < len(t) - num_knots, "Spline degree too high for the given data"
 
     knots = np.concatenate(([tl] * degree, knots, [tr] * degree))
-    
-    t_dense = np.linspace(tl, tr, num_knots * 5)
-    t_dense = np.unique(np.sort(np.concatenate((t_dense, t))))
-    u_interp = interp1d(t, u, kind="linear")
-    u_dense = u_interp(t_dense)
-    
-    res = make_lsq_spline(t_dense, u_dense, knots, degree, method = "qr")
+    res = make_lsq_spline(t, u, knots, degree, method = "qr")
     return res
 
 def inverse_interpolate_time_parametric_space(t_interp, t_to_u):
