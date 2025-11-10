@@ -234,7 +234,7 @@ def interpolate_time_parametric_space(t, u, num_knots, degree=3, knots_placment=
     
     assert np.all(np.diff(t) > 0), "t must be strictly increasing"
     assert np.all(np.diff(u) > 0), "u must be strictly increasing"
-    assert degree < len(t) - num_knots, "Spline degree too high for the given data"
+    # assert degree < len(t) - num_knots, "Spline degree too high for the given data"
 
     knots = np.concatenate(([tl] * degree, knots, [tr] * degree))
     

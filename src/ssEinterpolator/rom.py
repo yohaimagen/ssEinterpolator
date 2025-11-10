@@ -140,6 +140,7 @@ class ROM:
         for k in self.D_sses.keys():
             self.logger.info(f'Creating latent matrix for sse {idx} and key {k}')
             print(f'Creating latent matrix for sse {idx} and key {k}')
+            self.logger.info(f'Creating latent matrix for sse {idx} and key {k}')
             data = self.D_sses[k][idx]
 
             latent_vec = interpolate_to_latent(data.sr, data.state, data.slip, data.t, num_of_knots=self.u_to_par_knot_l, num_of_t_knots=self.t_to_u_knot_l, t_knots_placment='both', ratio=0.67)
@@ -272,6 +273,15 @@ class ROM:
             reconstructed_sr, reconstructed_state, reconstructed_slip, t_interp = inverse_interpolation(ypred[0], self.lf, self.t_to_u_knot_l, self.t_to_u_cof_l, self.u_to_par_knot_l, self.u_to_par_cof_l, t_interp=self.t_interpolate)
             recostracted_sses.append(Data(params=w, sr=reconstructed_sr, state=reconstructed_state, slip=reconstructed_slip, t=t_interp * (365*24*60*60)))
         return recostracted_sses
+    
+    def predict_latent(self, w):
+        w_norm = (w - self.f_mean) / self.f_std
+        latent_sses = []
+        for rbf, u in zip(self.RBFs, self.U):
+            apred = rbf(w_norm)
+            ypred = (u @ apred.T).reshape(1, -1)
+            latent_sses.append(ypred)
+        return latent_sses
             
     def leave_one_out(self, leave_one_out):
         recostracted_sses = []
@@ -305,7 +315,22 @@ class ROM:
             a_preds.append(apred)
         return a_tests, a_preds
     
-    
+    def leave_one_out_latent(self, leave_one_out):
+        latents = []
+        
+        
+        for latent, a, u, s, vh in zip(self.latent, self.A, self.U, self.S, self.V):
+            a_test = a[leave_one_out]
+            a_train = np.delete(a, leave_one_out, axis=0)
+            y_test = self.f_params_normalized[leave_one_out]
+            y_train = np.delete(self.f_params_normalized, leave_one_out, axis=0)
+            rbf = RBFInterpolator(y_train, a_train, kernel='linear')
+            apred = rbf(y_test.reshape(1, -1))
+            ypred = (u @ apred.T).reshape(1, -1)
+            latents.append(ypred)
+        return latents
+
+
     def build_reconstructed_time_series(self, reconstructed_sses):
         sr = np.copy(reconstructed_sses[0].sr)
         state = np.copy(reconstructed_sses[0].state)
