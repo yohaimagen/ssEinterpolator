@@ -2,7 +2,7 @@
 
 **Interpolate numerical Slow Slip simulations**
 
-This repository contains the source code for `ssEinterpolator`, a Python package for interpolating numerical Slow Slip simulations.
+This repository contains the source code for `ssEinterpolator`, a Python package for Reduced Order Modeling (ROM) of numerical Slow Slip simulations. See the corsponding publication for more deatiles "[Reduced-order modelling of Cascadia’s slow slip cycles](https://eartharxiv.org/repository/view/9411/)".
 
 ## Installation
 
