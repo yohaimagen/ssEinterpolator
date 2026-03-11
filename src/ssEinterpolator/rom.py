@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.interpolate import RBFInterpolator
 from multiprocessing import Pool
+from joblib import parallel_backend
 from .interpolation import *
 from .data import Data
 from .utils import find_slip_events
@@ -40,9 +41,9 @@ def calc_latent_helper(args):
     return latent
 
 class ROM:
-    def __init__(self, f_params, str_params, load_f, lf_path, sses_num, t_to_u_knot_l, u_to_par_knot_l, along_dp_sses_depth_detector = 195, sses_detector_threshold=-4, sses_starts=0, t_start=0, t_end=1e99, base_step_t_interpolate=1e-4, depths_t_interpolate=9, load_data=True, log=False, rbf_kernal='linear'):
+    def __init__(self, f_params, str_params, load_f, lf_path, sses_num, t_to_u_knot_l, u_to_par_knot_l, along_dp_sses_depth_detector = 195, sses_detector_threshold=-4, sses_starts=0, t_start=0, t_end=1e99, base_step_t_interpolate=1e-4, depths_t_interpolate=9, load_data=True, log=False, rbf_kernal='linear', n_workers=30):
         self.log = log
-        
+        self.n_workers = n_workers
         self.logger = self.setup_logger(log)
         self.rbf_kernal = rbf_kernal
         self.lf = np.load(lf_path)
@@ -87,7 +88,7 @@ class ROM:
         # print(str_params.shape)
         self.logger.info(f'Creating {sses_num} sses for {len(f_params)} params')
         if load_data:
-            with Pool(processes=30) as pool:
+            with Pool(processes=min(self.n_workers, len(self.f_params))) as pool:
                 results = pool.map(process_data, [(self, self.f_params[k], self.str_params[k]) for k in range(len(self.f_params))])
 
             for key, split_data in results:
@@ -143,7 +144,7 @@ class ROM:
             self.logger.info(f'Creating latent matrix for sse {idx} and key {k}')
             data = self.D_sses[k][idx]
 
-            latent_vec = interpolate_to_latent(data.sr, data.state, data.slip, data.t, num_of_knots=self.u_to_par_knot_l, num_of_t_knots=self.t_to_u_knot_l, t_knots_placment='both', ratio=0.67)
+            latent_vec = interpolate_to_latent(data.sr, data.state, data.slip, data.t, num_of_knots=self.u_to_par_knot_l, num_of_t_knots=self.t_to_u_knot_l, t_knots_placment='both', ratio=0.67, n_workers=self.n_workers)
             if np.sum(np.isnan(latent_vec)) > 0:
                 warnings.warn(f'Latent vector for sse {idx} and key {k} contains NaN values')
                 self.logger.warning(f'Latent vector for sse {idx} and key {k} contains NaN values')
@@ -156,8 +157,9 @@ class ROM:
     
     def build_latent_matrices(self, save_path=None):
         self.latent = []
-        for i in range(self.sses_num):
-            self.latent.append(self.create_one_sse_latent_matrix(i, save_path))
+        with parallel_backend("loky", n_jobs=self.n_workers):
+            for i in range(self.sses_num):
+                self.latent.append(self.create_one_sse_latent_matrix(i, save_path))
             
     
    

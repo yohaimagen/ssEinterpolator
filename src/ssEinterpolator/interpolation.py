@@ -4,7 +4,7 @@ Interpolation module for ssEinterpolator.
 
 import numpy as np
 from scipy.interpolate import splprep, splrep, splev, make_lsq_spline, interp1d
-from multiprocessing import Pool
+from joblib import Parallel, delayed
 
 # def interpolate_to_latent(sr, state, slip, t, num_of_knots=1000, num_of_t_knots=300, t_knots_placment='linspace', ratio=None):
 #     """Interpolate sr and state into a latent space."""
@@ -43,20 +43,21 @@ def process_single_series(args):
     return np.concatenate((t_to_u.t, t_to_u.c, u_to_pars[0], u_to_pars[1][0], u_to_pars[1][1], u_to_pars[1][2], 
                             [state_min, state_max, sr_min, sr_max, slip_min, slip_max]))
 
-def interpolate_to_latent(sr, state, slip, t, num_of_knots=1000, num_of_t_knots=300, t_knots_placment='linspace', ratio=None):
-    """Interpolate sr and state into a latent space using multiprocessing."""
+def interpolate_to_latent(sr, state, slip, t, num_of_knots=1000, num_of_t_knots=300, t_knots_placment='linspace', ratio=None, n_workers=30):
+    """Interpolate sr and state into a latent space using joblib."""
     if t_knots_placment not in {'quantile', 'linspace', 'both'}:
         raise ValueError("t_knots_placment must be 'quantile', 'linspace', or 'both'.")
     if t_knots_placment == 'both' and ratio is None:
         raise ValueError("ratio must be provided when t_knots_placment is 'both'.")
-    
-    # Prepare arguments for multiprocessing
-    args_list = [(idx, sr[idx], state[idx], slip[idx], t, num_of_knots, num_of_t_knots, t_knots_placment, ratio) 
+
+    args_list = [(idx, sr[idx], state[idx], slip[idx], t, num_of_knots, num_of_t_knots, t_knots_placment, ratio)
                  for idx in range(sr.shape[0])]
-    
-    with Pool(30) as pool:
-        latent_list = pool.map(process_single_series, args_list)
-    
+
+    n = min(n_workers, len(args_list))
+    latent_list = Parallel(n_jobs=n, backend="loky")(
+        delayed(process_single_series)(a) for a in args_list
+    )
+
     latent_list.append([t[0], t[-1]])
     return np.concatenate(latent_list)
 
