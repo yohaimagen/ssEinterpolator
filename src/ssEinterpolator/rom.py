@@ -41,7 +41,7 @@ def calc_latent_helper(args):
     return latent
 
 class ROM:
-    def __init__(self, f_params, str_params, load_f, lf_path, sses_num, t_to_u_knot_l, u_to_par_knot_l, along_dp_sses_depth_detector = 195, sses_detector_threshold=-4, sses_starts=0, t_start=0, t_end=1e99, base_step_t_interpolate=1e-4, depths_t_interpolate=9, load_data=True, log=False, rbf_kernal='linear', n_workers=30):
+    def __init__(self, f_params, str_params, load_f, lf_path, sses_num, t_to_u_knot_l, u_to_par_knot_l, along_dp_sses_depth_detector = 195, sses_detector_threshold=-4, sses_starts=0, t_start=0, t_end=1e99, base_step_t_interpolate=1e-4, depths_t_interpolate=9, load_data=True, log=False, rbf_kernal='linear', n_workers=30, load_workers=1):
         self.log = log
         self.n_workers = n_workers
         self.logger = self.setup_logger(log)
@@ -88,7 +88,7 @@ class ROM:
         # print(str_params.shape)
         self.logger.info(f'Creating {sses_num} sses for {len(f_params)} params')
         if load_data:
-            with Pool(processes=min(self.n_workers, len(self.f_params))) as pool:
+            with Pool(processes=min(load_workers, len(self.f_params))) as pool:
                 results = pool.map(process_data, [(self, self.f_params[k], self.str_params[k]) for k in range(len(self.f_params))])
 
             for key, split_data in results:

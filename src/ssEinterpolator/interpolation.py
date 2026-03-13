@@ -86,15 +86,18 @@ def interpolate_to_latent(sr, state, slip, t, num_of_knots=1000, num_of_t_knots=
 
 
 def insert_dense_u(u, thrsh):
-    u_new = [u[0]]
     du = np.diff(u)
-    for i in range(len(du)):
-        n_insert = int(np.ceil(du[i] / thrsh)) - 1
-        if n_insert > 0:
-            extra = np.linspace(u[i], u[i+1], n_insert + 2)[1:-1]
-            u_new.extend(extra)
-        u_new.append(u[i+1])
-    return np.array(u_new)
+    counts = np.maximum(np.ceil(du / thrsh).astype(int), 1)
+
+    # Build all interpolation fractions without a Python loop
+    # For each gap i with count n: points are u[i] + k/n * du[i], k=0..n-1
+    starts = np.repeat(u[:-1], counts)
+    steps = np.repeat(du / counts, counts)
+    offsets = np.arange(counts.sum()) - np.repeat(np.concatenate(([0], np.cumsum(counts[:-1]))), counts)
+    result = np.empty(counts.sum() + 1)
+    result[:-1] = starts + offsets * steps
+    result[-1] = u[-1]
+    return result
 
 
 def interpolate_to_latent_single_along_stk(sr, state, slip, num_of_knots=500, degree=3, iterations=5, thrsh=0.01):
@@ -165,9 +168,9 @@ def interpolate_to_latent_single_along_stk(sr, state, slip, num_of_knots=500, de
     c_dense = c_interp(u_new)
 
     # Fit splines using densified data and knots from original u
-    u_to_p = make_lsq_spline(u_new, p_dense, knots, degree)
-    u_to_s = make_lsq_spline(u_new, s_dense, knots, degree)
-    u_to_c = make_lsq_spline(u_new, c_dense, knots, degree)
+    u_to_p = make_lsq_spline(u_new, p_dense, knots, degree, method="norm-eq")
+    u_to_s = make_lsq_spline(u_new, s_dense, knots, degree, method="norm-eq")
+    u_to_c = make_lsq_spline(u_new, c_dense, knots, degree, method="norm-eq")
 
     
     tck = [u_to_p.t, [u_to_p.c, u_to_s.c, u_to_c.c], degree]
@@ -244,7 +247,7 @@ def interpolate_time_parametric_space(t, u, num_knots, degree=3, knots_placment=
     u_interp = interp1d(t, u, kind="linear")
     u_dense = u_interp(t_dense)
     
-    res = make_lsq_spline(t_dense, u_dense, knots, degree, method = "qr")
+    res = make_lsq_spline(t_dense, u_dense, knots, degree, method = "norm-eq")
     return res
 
 def inverse_interpolate_time_parametric_space(t_interp, t_to_u):
