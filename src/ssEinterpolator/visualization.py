@@ -1,10 +1,25 @@
-"""
-Visualization module for ssEinterpolator.
-"""
+"""Visualization module for ssEinterpolator."""
 
+from __future__ import annotations
+
+import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from scipy.interpolate import splev
 
-def plot_depth(depth, axs):
+
+def plot_depth(depth: float, axs: list[Axes]) -> None:
+    """Plot original vs. spline-reconstructed slip rate and state at a given depth.
+
+    Compares raw simulation data against the B-spline latent representation for
+    a single along-fault depth, drawing three subplots: state-vs-SR phase space,
+    state vs. time, and log slip rate vs. time.
+
+    Args:
+        depth: Along-fault depth value to plot. The nearest index in ``lf`` is used.
+        axs: List of three Matplotlib Axes objects for the three subplots:
+            [phase space, state vs. time, slip rate vs. time].
+    """
     idx = np.argmin(np.abs(lf - depth))
     mask = (data['t'] > 80) & (data['t'] < 110)
     sr = np.log10(np.abs(data['sr'][idx][mask]))
@@ -14,7 +29,6 @@ def plot_depth(depth, axs):
     p_interp, s_interp = splev(u, tck)
     state_interp = p_interp * (state.max() - state.min()) + state.min()
     sr_interp = s_interp * (sr.max() - sr.min()) + sr.min()
-    # fig, axs = plt.subplots(1, 3, figsize=(15, 5))
     ax = axs[0]
     ax.scatter(state, sr, label='data', s=3)
     ax.scatter(state_interp, sr_interp, s=1, label='spline', zorder=10)

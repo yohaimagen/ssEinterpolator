@@ -209,6 +209,41 @@ python standrtize_data.py <input_dir> <output_dir> <prefix> <sr_idx> <t_start> <
 
 ---
 
+## Code Style Requirements
+
+All `.py` files in this package must follow these conventions:
+
+### Type Hints
+- Every function and method signature must have type annotations on all parameters and the return value.
+- Use `from __future__ import annotations` at the top of each file to enable PEP 604 (`X | None`) and forward-reference syntax on Python 3.9+.
+- Use built-in generic types (`list[...]`, `tuple[...]`, `dict[...]`) rather than `typing.List`, `typing.Tuple`, etc.
+- Use `X | None` instead of `Optional[X]`.
+- Use `typing.Callable`, `typing.Any` where needed for complex signatures.
+- `np.ndarray` for all NumPy arrays.
+
+### Docstrings — Google Style
+Every public class, method, and function must have a Google-style docstring:
+```python
+def func(x: np.ndarray, n: int = 5) -> np.ndarray:
+    """One-line summary ending with period.
+
+    Longer description if needed.
+
+    Args:
+        x: Description of x. Shape conventions go here, e.g. [n_depths, n_time].
+        n: Description of n.
+
+    Returns:
+        Description of return value and shape.
+
+    Raises:
+        ValueError: When and why this is raised.
+    """
+```
+- The one-line summary must fit on one line and end with a period.
+- For classes, document attributes in an `Attributes:` section in the class docstring rather than in `__init__`.
+- Private/helper functions (prefixed `_`) still need docstrings if their logic is non-obvious.
+
 ## Dependencies
 
 | Library | Role |
