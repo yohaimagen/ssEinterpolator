@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from scipy.interpolate import splev, make_lsq_spline, interp1d
@@ -11,19 +11,20 @@ from joblib import Parallel, delayed
 
 
 def process_single_series(
-    args: tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, str, float | None],
-) -> np.ndarray:
-    """Compute the latent vector for a single depth index.
+    args: tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, str, float | None, str],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute the per-depth latent block and shared t→u knots for one depth.
 
     This is the per-depth worker function called in parallel by
     :func:`interpolate_to_latent`. It applies the log transform to slip rate,
-    builds the intrinsic-parameter and time splines, and packs their
-    knots/coefficients together with normalization constants into a 1-D vector.
+    builds the intrinsic-parameter and time splines, and returns the t→u knot
+    vector separately from the per-depth coefficient block so that callers can
+    store knots once per SSE rather than once per depth.
 
     Args:
         args: Tuple of
             (idx, sr_i, state_i, slip_i, t, num_of_knots, num_of_t_knots,
-            t_knots_placment, ratio) where:
+            t_knots_placment, ratio, method) where:
 
             - idx: Depth index (used only for debug printing).
             - sr_i: Slip rate array at this depth, shape [n_time].
@@ -35,23 +36,37 @@ def process_single_series(
             - t_knots_placment: Knot placement strategy ('quantile', 'linspace',
               or 'both').
             - ratio: Fraction of linspace knots when t_knots_placment is 'both'.
+            - method: Solver for make_lsq_spline ('qr' or 'norm-eq').
 
     Returns:
-        1-D latent vector concatenating t→u spline knots/coefficients, u→pars
-        spline knots/coefficients for (state, sr, slip), and six normalization
-        constants (state_min, state_max, sr_min, sr_max, slip_min, slip_max).
+        Tuple (t_to_u_knots, depth_block) where:
+
+        - t_to_u_knots: 1-D array of t→u spline knots, shape [t_to_u_knot_l].
+          Identical across all depths for a given SSE (same time array).
+        - depth_block: 1-D array concatenating t→u coefficients, u→pars spline
+          knots/coefficients for (state, sr, slip), and six normalization
+          constants (state_min, state_max, sr_min, sr_max, slip_min, slip_max).
+          Does NOT include t→u knots.
     """
-    idx, sr_i, state_i, slip_i, t, num_of_knots, num_of_t_knots, t_knots_placment, ratio = args
+    idx, sr_i, state_i, slip_i, t, num_of_knots, num_of_t_knots, t_knots_placment, ratio, method = args
     sr_i = np.log10(np.abs(sr_i))
-    u_to_pars, u = interpolate_to_latent_single_along_stk(sr=sr_i, state=state_i, slip=slip_i, num_of_knots=num_of_knots)
+    u_to_pars, u = interpolate_to_latent_single_along_stk(
+        sr=sr_i, state=state_i, slip=slip_i, num_of_knots=num_of_knots, method=method,
+    )
     if np.sum(np.isnan(u)) > 0:
         print(f'NaN in u for series {idx}')
-    t_to_u = interpolate_time_parametric_space(t, u, num_knots=num_of_t_knots, knots_placment=t_knots_placment, ratio=ratio)
+    t_to_u = interpolate_time_parametric_space(
+        t, u, num_knots=num_of_t_knots, knots_placment=t_knots_placment, ratio=ratio, method=method,
+    )
     state_min, state_max = np.min(state_i), np.max(state_i)
     sr_min, sr_max = np.min(sr_i), np.max(sr_i)
     slip_min, slip_max = np.min(slip_i), np.max(slip_i)
-    return np.concatenate((t_to_u.t, t_to_u.c, u_to_pars[0], u_to_pars[1][0], u_to_pars[1][1], u_to_pars[1][2],
-                            [state_min, state_max, sr_min, sr_max, slip_min, slip_max]))
+    depth_block = np.concatenate((
+        t_to_u.c,
+        u_to_pars[0], u_to_pars[1][0], u_to_pars[1][1], u_to_pars[1][2],
+        [state_min, state_max, sr_min, sr_max, slip_min, slip_max],
+    ))
+    return t_to_u.t, depth_block
 
 
 def interpolate_to_latent(
@@ -64,12 +79,21 @@ def interpolate_to_latent(
     t_knots_placment: str = 'linspace',
     ratio: float | None = None,
     n_workers: int = 30,
+    method: Literal['qr', 'norm-eq'] = 'qr',
 ) -> np.ndarray:
     """Convert a full SSE simulation snapshot into a single latent vector.
 
     Processes all depth indices in parallel. Each depth is encoded by two
-    B-splines (u→pars and t→u) whose parameters are concatenated. The full
-    output vector also appends the time bounds [t[0], t[-1]].
+    B-splines (u→pars and t→u). The t→u knot vector is identical across all
+    depths (all share the same time axis), so it is stored **once** at the
+    beginning of the output vector rather than being replicated per depth.
+
+    Output format::
+
+        [t→u knots | depth_0_block | depth_1_block | … | t_min | t_max]
+
+    where each ``depth_i_block`` contains t→u coefficients, u→pars knots and
+    coefficients for (state, sr, slip), and six normalization constants.
 
     Args:
         sr: Slip rate array, shape [n_depths, n_time].
@@ -83,11 +107,14 @@ def interpolate_to_latent(
         ratio: Fraction of linspace knots when t_knots_placment is 'both'.
             Required if t_knots_placment == 'both'.
         n_workers: Maximum number of parallel joblib workers.
+        method: Linear solver for make_lsq_spline. 'qr' (default) is more
+            numerically stable; 'norm-eq' is faster.
 
     Returns:
         1-D latent vector of length
-        ``n_depths * dp_laten_vec_length + 2``, where the last two elements
-        are t[0] and t[-1].
+        ``t_to_u_knot_l + n_depths * dp_laten_vec_length + 2``, where the
+        first ``t_to_u_knot_l`` elements are the shared t→u knots and the last
+        two elements are t[0] and t[-1].
 
     Raises:
         ValueError: If t_knots_placment is not one of the allowed values, or if
@@ -98,16 +125,21 @@ def interpolate_to_latent(
     if t_knots_placment == 'both' and ratio is None:
         raise ValueError("ratio must be provided when t_knots_placment is 'both'.")
 
-    args_list = [(idx, sr[idx], state[idx], slip[idx], t, num_of_knots, num_of_t_knots, t_knots_placment, ratio)
-                 for idx in range(sr.shape[0])]
+    args_list = [
+        (idx, sr[idx], state[idx], slip[idx], t, num_of_knots, num_of_t_knots, t_knots_placment, ratio, method)
+        for idx in range(sr.shape[0])
+    ]
 
     n = min(n_workers, len(args_list))
-    latent_list = Parallel(n_jobs=n, backend="loky")(
+    results: list[tuple[np.ndarray, np.ndarray]] = Parallel(n_jobs=n, backend="loky")(
         delayed(process_single_series)(a) for a in args_list
     )
 
-    latent_list.append([t[0], t[-1]])
-    return np.concatenate(latent_list)
+    # t→u knots are identical across all depths (same time array); store once.
+    t_to_u_knots = results[0][0]
+    depth_blocks = [r[1] for r in results]
+
+    return np.concatenate([t_to_u_knots] + depth_blocks + [[t[0], t[-1]]])
 
 
 def insert_dense_u(u: np.ndarray, thrsh: float) -> np.ndarray:
@@ -144,6 +176,7 @@ def interpolate_to_latent_single_along_stk(
     degree: int = 3,
     iterations: int = 5,
     thrsh: float = 0.01,
+    method: Literal['qr', 'norm-eq'] = 'qr',
 ) -> tuple[list[Any], np.ndarray]:
     """Fit a B-spline mapping u → (state, sr, slip) for a single depth.
 
@@ -169,6 +202,7 @@ def interpolate_to_latent_single_along_stk(
         - tck: List [knots, [state_coeffs, sr_coeffs, slip_coeffs], degree].
         - u: Arc-length parameter array, shape [n_time], values in [0, 1].
     """
+    # method is passed through to make_lsq_spline
     p = np.copy(state)
     s = np.copy(sr)
     c = np.copy(slip)
@@ -210,9 +244,9 @@ def interpolate_to_latent_single_along_stk(
     s_dense = s_interp(u_new)
     c_dense = c_interp(u_new)
 
-    u_to_p = make_lsq_spline(u_new, p_dense, knots, degree, method="norm-eq")
-    u_to_s = make_lsq_spline(u_new, s_dense, knots, degree, method="norm-eq")
-    u_to_c = make_lsq_spline(u_new, c_dense, knots, degree, method="norm-eq")
+    u_to_p = make_lsq_spline(u_new, p_dense, knots, degree, method=method)
+    u_to_s = make_lsq_spline(u_new, s_dense, knots, degree, method=method)
+    u_to_c = make_lsq_spline(u_new, c_dense, knots, degree, method=method)
 
     tck = [u_to_p.t, [u_to_p.c, u_to_s.c, u_to_c.c], degree]
     return tck, u
@@ -225,6 +259,7 @@ def interpolate_time_parametric_space(
     degree: int = 3,
     knots_placment: str = 'linspace',
     ratio: float | None = None,
+    method: Literal['qr', 'norm-eq'] = 'qr',
 ) -> BSpline:
     """Fit a B-spline mapping t → u for a single depth's SSE cycle.
 
@@ -285,7 +320,7 @@ def interpolate_time_parametric_space(
     u_interp = interp1d(t, u, kind="linear")
     u_dense = u_interp(t_dense)
 
-    res = make_lsq_spline(t_dense, u_dense, knots, degree, method="norm-eq")
+    res = make_lsq_spline(t_dense, u_dense, knots, degree, method=method)
     return res
 
 
@@ -339,40 +374,46 @@ def inverse_interpolation(
         where each array has shape [n_depths, n_interp] for the physical fields
         and shape [n_interp] for the time axis (denormalized to physical time).
     """
-    l = t_to_u_knot_l + t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l * 3 + 6
-    reconstructed_sr = []
-    reconstructed_state = []
-    reconstructed_slip = []
-    t_interps = []
-    for idx in range(lf.shape[0]):
-        sig_latent = latent_vec[l * idx: (idx + 1) * l]
-        if np.sum(np.isnan(sig_latent)) > 0:
-            print(idx)
-        if np.sum(np.isinf(sig_latent)) > 0:
-            print(idx)
-        t_to_u_knots = sig_latent[:t_to_u_knot_l]
-        t_to_u_cofs = sig_latent[t_to_u_knot_l:t_to_u_knot_l + t_to_u_cof_l]
-        sig_t_to_u = [t_to_u_knots, t_to_u_cofs, 3]
-        u_to_pars_knots = sig_latent[t_to_u_knot_l + t_to_u_cof_l: t_to_u_knot_l + t_to_u_cof_l + u_to_par_knot_l]
-        u_to_state_cofs = sig_latent[t_to_u_knot_l + t_to_u_cof_l + u_to_par_knot_l: t_to_u_knot_l + t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l]
-        u_to_sr_cofs = sig_latent[t_to_u_knot_l + t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l: t_to_u_knot_l + t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l + u_to_par_cof_l]
-        u_to_slip_cofs = sig_latent[t_to_u_knot_l + t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l + u_to_par_cof_l: t_to_u_knot_l + t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l + u_to_par_cof_l + u_to_par_cof_l]
-        sig_u_to_pars = [u_to_pars_knots, [u_to_state_cofs, u_to_sr_cofs, u_to_slip_cofs], 3]
+    # New format: [t→u knots | depth_0_block | depth_1_block | ... | t_min | t_max]
+    # Per-depth block no longer includes t→u knots.
+    l = t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l * 3 + 6
+
+    # Shared t→u knots stored once at the start of the vector.
+    t_to_u_knots = latent_vec[:t_to_u_knot_l]
+
+    n_depths = lf.shape[0]
+    reconstructed_sr    = np.empty((n_depths, t_interp.shape[0]))
+    reconstructed_state = np.empty((n_depths, t_interp.shape[0]))
+    reconstructed_slip  = np.empty((n_depths, t_interp.shape[0]))
+
+    for idx in range(n_depths):
+        start = t_to_u_knot_l + idx * l
+        sig_latent = latent_vec[start: start + l]
+
+        t_to_u_cofs     = sig_latent[:t_to_u_cof_l]
+        sig_t_to_u      = [t_to_u_knots, t_to_u_cofs, 3]
+
+        u_to_pars_knots = sig_latent[t_to_u_cof_l: t_to_u_cof_l + u_to_par_knot_l]
+        u_to_state_cofs = sig_latent[t_to_u_cof_l + u_to_par_knot_l: t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l]
+        u_to_sr_cofs    = sig_latent[t_to_u_cof_l + u_to_par_knot_l +     u_to_par_cof_l: t_to_u_cof_l + u_to_par_knot_l + 2 * u_to_par_cof_l]
+        u_to_slip_cofs  = sig_latent[t_to_u_cof_l + u_to_par_knot_l + 2 * u_to_par_cof_l: t_to_u_cof_l + u_to_par_knot_l + 3 * u_to_par_cof_l]
+        sig_u_to_pars   = [u_to_pars_knots, [u_to_state_cofs, u_to_sr_cofs, u_to_slip_cofs], 3]
+
         state_min = sig_latent[-6]
         state_max = sig_latent[-5]
-        sr_min = sig_latent[-4]
-        sr_max = sig_latent[-3]
-        slip_min = sig_latent[-2]
-        slip_max = sig_latent[-1]
+        sr_min    = sig_latent[-4]
+        sr_max    = sig_latent[-3]
+        slip_min  = sig_latent[-2]
+        slip_max  = sig_latent[-1]
 
-        t_interp1, state_interp, sr_interp, slip_interp = inverse_interpolate_to_latent_single_along_stk(t_interp, sig_t_to_u, sig_u_to_pars, state_max, state_min, sr_max, sr_min, slip_max, slip_min)
-        reconstructed_sr.append(sr_interp)
-        reconstructed_state.append(state_interp)
-        reconstructed_slip.append(slip_interp)
-        t_interps.append(t_interp1)
-    reconstructed_sr = np.array(reconstructed_sr)
-    reconstructed_state = np.array(reconstructed_state)
-    reconstructed_slip = np.array(reconstructed_slip)
+        _, state_interp, sr_interp, slip_interp = inverse_interpolate_to_latent_single_along_stk(
+            t_interp, sig_t_to_u, sig_u_to_pars,
+            state_max, state_min, sr_max, sr_min, slip_max, slip_min,
+        )
+        reconstructed_sr[idx]    = sr_interp
+        reconstructed_state[idx] = state_interp
+        reconstructed_slip[idx]  = slip_interp
+
     t_min = latent_vec[-2]
     t_max = latent_vec[-1]
     t_interp = (t_interp * (t_max - t_min)) + t_min

@@ -5,7 +5,7 @@ import logging
 import datetime
 import sys
 import warnings
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 from scipy.interpolate import RBFInterpolator
@@ -99,6 +99,7 @@ class ROM:
         lf: Along-fault depth array, shape [n_depths].
         t_interpolate: Normalized interpolation time grid used during prediction.
         r: Number of POD modes retained after build_pod.
+        spline_method: Solver used for all make_lsq_spline calls ('qr' or 'norm-eq').
     """
 
     def __init__(
@@ -122,6 +123,7 @@ class ROM:
         rbf_kernal: str = 'linear',
         n_workers: int = 30,
         load_workers: int = 1,
+        spline_method: Literal['qr', 'norm-eq'] = 'qr',
     ) -> None:
         """Initialize the ROM, load simulations, and split data by SSE.
 
@@ -152,11 +154,14 @@ class ROM:
             rbf_kernal: RBF kernel type passed to RBFInterpolator (e.g. 'linear').
             n_workers: Number of parallel workers for latent matrix construction.
             load_workers: Number of parallel workers for data loading.
+            spline_method: Linear solver passed to make_lsq_spline for all spline
+                fits. 'qr' (default) is more numerically stable; 'norm-eq' is faster.
         """
         self.log = log
         self.n_workers = n_workers
         self.logger = self.setup_logger(log)
         self.rbf_kernal = rbf_kernal
+        self.spline_method = spline_method
         self.lf = np.load(lf_path)
         self.f_params = f_params
         self.f_mean = np.mean(self.f_params, axis=0)
@@ -233,7 +238,10 @@ class ROM:
         self.u_to_par_knot_l = u_to_par_knot_l
         self.t_to_u_cof_l = self.t_to_u_knot_l - 4
         self.u_to_par_cof_l = self.u_to_par_knot_l - 4
-        self.dp_laten_vec_length = self.t_to_u_knot_l + self.t_to_u_cof_l + self.u_to_par_knot_l + self.u_to_par_cof_l * 2 + 4
+        # Per-depth block size in the new latent format (t→u knots stored once,
+        # not repeated per depth): t→u coeffs + u→pars knots + 3×u→pars coeffs
+        # + 6 normalization constants.
+        self.dp_laten_vec_length = self.t_to_u_cof_l + self.u_to_par_knot_l + self.u_to_par_cof_l * 3 + 6
 
     def split_data_by_sse(self, data: Data, sses: np.ndarray) -> list[Data]:
         """Split a continuous Data object into per-SSE windows.
@@ -280,7 +288,7 @@ class ROM:
             print(f'Creating latent matrix for sse {idx} and key {k}')
             data = self.D_sses[k][idx]
 
-            latent_vec = interpolate_to_latent(data.sr, data.state, data.slip, data.t, num_of_knots=self.u_to_par_knot_l, num_of_t_knots=self.t_to_u_knot_l, t_knots_placment='both', ratio=0.67, n_workers=self.n_workers)
+            latent_vec = interpolate_to_latent(data.sr, data.state, data.slip, data.t, num_of_knots=self.u_to_par_knot_l, num_of_t_knots=self.t_to_u_knot_l, t_knots_placment='both', ratio=0.67, n_workers=self.n_workers, method=self.spline_method)
             if np.sum(np.isnan(latent_vec)) > 0:
                 warnings.warn(f'Latent vector for sse {idx} and key {k} contains NaN values')
                 self.logger.warning(f'Latent vector for sse {idx} and key {k} contains NaN values')
