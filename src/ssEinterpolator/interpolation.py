@@ -357,9 +357,23 @@ def inverse_interpolation(
     Unpacks per-depth spline parameters from the latent vector, evaluates each
     spline at the interpolation grid, and denormalizes the outputs.
 
+    Applies two vectorization optimizations over a naive per-depth splev loop:
+
+    - **Step 3a** — t→u batch across all depths: t→u knots are shared (stored
+      once in the latent vector, not per-depth), so all n_depths coefficient
+      vectors are stacked into a ``[t_to_u_cof_l, n_depths]`` matrix and
+      evaluated in a single ``BSpline`` call → ``u_all`` shape
+      ``[n_interp, n_depths]``.  Reduces 346 splev calls to 1 BSpline call
+      per SSE.
+    - **Step 3b** — multi-output u→pars per depth: the three output variables
+      (state, sr, slip) share u→pars knots within each depth.  Their
+      coefficients are stacked ``[u_cof_l, 3]`` and evaluated in one
+      ``BSpline`` call per depth instead of three ``splev`` calls.
+
     Args:
         latent_vec: Flattened latent vector encoding all depths, shape
-            [n_depths * dp_laten_vec_length + 2]. The last two elements are
+            [t_to_u_knot_l + n_depths * dp_laten_vec_length + 2]. The first
+            t_to_u_knot_l elements are the shared t→u knots; the last two are
             the original time bounds (t_min, t_max).
         lf: Along-fault depth array, shape [n_depths].
         t_to_u_knot_l: Number of knots in the t→u spline.
@@ -374,30 +388,41 @@ def inverse_interpolation(
         where each array has shape [n_depths, n_interp] for the physical fields
         and shape [n_interp] for the time axis (denormalized to physical time).
     """
-    # New format: [t→u knots | depth_0_block | depth_1_block | ... | t_min | t_max]
-    # Per-depth block no longer includes t→u knots.
+    # Format: [t→u knots | depth_0_block | depth_1_block | ... | t_min | t_max]
+    # Per-depth block: t→u coeffs + u→pars knots + 3×u→pars coeffs + 6 norm constants.
     l = t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l * 3 + 6
 
-    # Shared t→u knots stored once at the start of the vector.
-    t_to_u_knots = latent_vec[:t_to_u_knot_l]
-
     n_depths = lf.shape[0]
-    reconstructed_sr    = np.empty((n_depths, t_interp.shape[0]))
-    reconstructed_state = np.empty((n_depths, t_interp.shape[0]))
-    reconstructed_slip  = np.empty((n_depths, t_interp.shape[0]))
+    n_t = t_interp.shape[0]
+
+    # Step 3a: batch t→u evaluation across all depths.
+    # Shared knots stored once at the start; sort once to satisfy BSpline.
+    t_to_u_knots = np.sort(latent_vec[:t_to_u_knot_l])
+    # Stack per-depth coefficient vectors: shape [t_to_u_cof_l, n_depths].
+    all_t_to_u_cofs = np.empty((t_to_u_cof_l, n_depths))
+    for idx in range(n_depths):
+        all_t_to_u_cofs[:, idx] = latent_vec[t_to_u_knot_l + idx * l: t_to_u_knot_l + idx * l + t_to_u_cof_l]
+    # One BSpline call → u values for every depth: shape [n_t, n_depths].
+    u_all = BSpline(t_to_u_knots, all_t_to_u_cofs, k=3)(t_interp)
+
+    reconstructed_sr    = np.empty((n_depths, n_t))
+    reconstructed_state = np.empty((n_depths, n_t))
+    reconstructed_slip  = np.empty((n_depths, n_t))
 
     for idx in range(n_depths):
         start = t_to_u_knot_l + idx * l
         sig_latent = latent_vec[start: start + l]
 
-        t_to_u_cofs     = sig_latent[:t_to_u_cof_l]
-        sig_t_to_u      = [t_to_u_knots, t_to_u_cofs, 3]
+        u_interp = u_all[:, idx]  # [n_t] — from the batched Step 3a call
 
-        u_to_pars_knots = sig_latent[t_to_u_cof_l: t_to_u_cof_l + u_to_par_knot_l]
-        u_to_state_cofs = sig_latent[t_to_u_cof_l + u_to_par_knot_l: t_to_u_cof_l + u_to_par_knot_l + u_to_par_cof_l]
-        u_to_sr_cofs    = sig_latent[t_to_u_cof_l + u_to_par_knot_l +     u_to_par_cof_l: t_to_u_cof_l + u_to_par_knot_l + 2 * u_to_par_cof_l]
-        u_to_slip_cofs  = sig_latent[t_to_u_cof_l + u_to_par_knot_l + 2 * u_to_par_cof_l: t_to_u_cof_l + u_to_par_knot_l + 3 * u_to_par_cof_l]
-        sig_u_to_pars   = [u_to_pars_knots, [u_to_state_cofs, u_to_sr_cofs, u_to_slip_cofs], 3]
+        # u→pars knots are per-depth (embedded in latent, subject to POD
+        # perturbation). Sort to satisfy BSpline's non-decreasing requirement.
+        u_to_pars_knots = np.sort(sig_latent[t_to_u_cof_l: t_to_u_cof_l + u_to_par_knot_l])
+
+        base = t_to_u_cof_l + u_to_par_knot_l
+        u_to_state_cofs = sig_latent[base:                       base + u_to_par_cof_l]
+        u_to_sr_cofs    = sig_latent[base + u_to_par_cof_l:      base + 2 * u_to_par_cof_l]
+        u_to_slip_cofs  = sig_latent[base + 2 * u_to_par_cof_l:  base + 3 * u_to_par_cof_l]
 
         state_min = sig_latent[-6]
         state_max = sig_latent[-5]
@@ -406,13 +431,14 @@ def inverse_interpolation(
         slip_min  = sig_latent[-2]
         slip_max  = sig_latent[-1]
 
-        _, state_interp, sr_interp, slip_interp = inverse_interpolate_to_latent_single_along_stk(
-            t_interp, sig_t_to_u, sig_u_to_pars,
-            state_max, state_min, sr_max, sr_min, slip_max, slip_min,
-        )
-        reconstructed_sr[idx]    = sr_interp
-        reconstructed_state[idx] = state_interp
-        reconstructed_slip[idx]  = slip_interp
+        # Step 3b: multi-output BSpline for u→(state, sr, slip).
+        # Stack coefficients [u_to_par_cof_l, 3] → one call → shape [n_t, 3].
+        cofs_3 = np.stack([u_to_state_cofs, u_to_sr_cofs, u_to_slip_cofs], axis=1)
+        out = BSpline(u_to_pars_knots, cofs_3, k=3)(u_interp)  # [n_t, 3]
+
+        reconstructed_state[idx] = out[:, 0] * (state_max - state_min) + state_min
+        reconstructed_sr[idx]    = out[:, 1] * (sr_max    - sr_min)    + sr_min
+        reconstructed_slip[idx]  = out[:, 2] * (slip_max  - slip_min)  + slip_min
 
     t_min = latent_vec[-2]
     t_max = latent_vec[-1]
