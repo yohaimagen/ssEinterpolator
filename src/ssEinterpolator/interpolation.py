@@ -366,11 +366,10 @@ def inverse_interpolation(
       ``[n_interp, n_depths]``.  Reduces 346 splev calls to 1 BSpline call
       per SSE.
 
-    Note: Step 3b (multi-output BSpline for u→pars) was attempted but reverted.
-    POD reconstruction corrupts the per-depth u→pars knot vectors enough that
-    ``BSpline`` raises ``ValueError: Need at least two internal knots`` on some
-    depths. ``splev`` (FITPACK Fortran) tolerates this silently, so u→pars
-    evaluation remains 3 ``splev`` calls per depth.
+    - **Step 3b** — multi-output u→pars per depth: within each depth, state, sr,
+      and slip share the same ``u_to_pars_knots`` slice from the latent vector.
+      Their coefficients are stacked ``[u_cof_l, 3]`` and evaluated in one
+      ``BSpline`` call per depth, replacing 3 ``splev`` calls with 1.
 
     Args:
         latent_vec: Flattened latent vector encoding all depths, shape
@@ -417,11 +416,14 @@ def inverse_interpolation(
 
         u_interp = u_all[:, idx]  # [n_t] — from the batched Step 3a call
 
-        # u→pars knots are per-depth and embedded in the latent vector, so they
-        # are subject to POD corruption. Use splev (FITPACK) which tolerates
-        # slightly non-monotone knots; BSpline enforces strict validity and
-        # raises ValueError when knots collapse after POD reconstruction.
-        u_to_pars_knots = sig_latent[t_to_u_cof_l: t_to_u_cof_l + u_to_par_knot_l]
+        # u→pars: one knot vector shared by all three output variables at this
+        # depth (same slice in the latent block). Stack coefficients into
+        # [u_to_par_cof_l, 3] and evaluate all three in one BSpline call,
+        # exactly analogous to Step 3a.
+        # POD reconstruction can perturb knots out of order → sort.
+        # If sort introduces NaN-at-end (latent had NaN), fall back to splev
+        # which tolerates both non-monotone knots and NaN silently.
+        u_to_pars_knots = np.sort(sig_latent[t_to_u_cof_l: t_to_u_cof_l + u_to_par_knot_l])
 
         base = t_to_u_cof_l + u_to_par_knot_l
         u_to_state_cofs = sig_latent[base:                       base + u_to_par_cof_l]
@@ -435,9 +437,20 @@ def inverse_interpolation(
         slip_min  = sig_latent[-2]
         slip_max  = sig_latent[-1]
 
-        reconstructed_state[idx] = splev(u_interp, [u_to_pars_knots, u_to_state_cofs, 3]) * (state_max - state_min) + state_min
-        reconstructed_sr[idx]    = splev(u_interp, [u_to_pars_knots, u_to_sr_cofs,    3]) * (sr_max    - sr_min)    + sr_min
-        reconstructed_slip[idx]  = splev(u_interp, [u_to_pars_knots, u_to_slip_cofs,  3]) * (slip_max  - slip_min)  + slip_min
+        # Step 3b: one BSpline call → shape [n_t, 3].
+        # POD can corrupt knots into degenerate geometry; fall back to splev
+        # (tolerant of corrupt knots) only for those rare depths.
+        cofs_3 = np.stack([u_to_state_cofs, u_to_sr_cofs, u_to_slip_cofs], axis=1)
+        try:
+            out = BSpline(u_to_pars_knots, cofs_3, k=3)(u_interp)  # [n_t, 3]
+            reconstructed_state[idx] = out[:, 0] * (state_max - state_min) + state_min
+            reconstructed_sr[idx]    = out[:, 1] * (sr_max    - sr_min)    + sr_min
+            reconstructed_slip[idx]  = out[:, 2] * (slip_max  - slip_min)  + slip_min
+        except ValueError:
+            u_to_pars_knots_raw = sig_latent[t_to_u_cof_l: t_to_u_cof_l + u_to_par_knot_l]
+            reconstructed_state[idx] = splev(u_interp, [u_to_pars_knots_raw, u_to_state_cofs, 3]) * (state_max - state_min) + state_min
+            reconstructed_sr[idx]    = splev(u_interp, [u_to_pars_knots_raw, u_to_sr_cofs,    3]) * (sr_max    - sr_min)    + sr_min
+            reconstructed_slip[idx]  = splev(u_interp, [u_to_pars_knots_raw, u_to_slip_cofs,  3]) * (slip_max  - slip_min)  + slip_min
 
     t_min = latent_vec[-2]
     t_max = latent_vec[-1]
